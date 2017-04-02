@@ -1,0 +1,281 @@
+---
+title: "Practical Machine Learning Prediction Assignment Course Project"
+author: "Prabhu Thaipulley - 2nd April 2017"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    fig_caption: yes
+    keep_md: yes
+    toc: yes
+---
+
+```{r, echo=FALSE}
+message(sprintf("Run time: %s\nR version: %s", Sys.time(), R.Version()$version.string))
+```
+
+> This document establishes a stepwise description of the analysis performed for the prediction assignment of the Coursera’s Practical Machine Learning course. This project uses data from the accelerometers of fitness devices of six participants to determine the manner in which they performed a particular exercise.
+
+> **Project Background**
+
+> Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+
+> **Preparing the datasets **
+
+This document establishes a stepwise description of the analysis performed for the prediction assignment of the Coursera’s Practical Machine Learning course. This project uses data from the accelerometers of fitness devices of six participants to determine the manner in which they performed a particular exercise.
+
+
+> The training data for this project are available here: 
+
+> https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+> The test data are available here: 
+
+> https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+> The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+```{r}
+library(data.table)
+
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+TrainingData <- fread(url)
+
+# record the download date, as mentioned in lectures
+DownloadDate <- date()
+sink("/Users/tsprabhu/github/PML_CourseProject/PML_CourseProject_files/data/download_date_training.txt")
+cat("Date training data downloaded: ")
+```
+
+```{r}
+cat(DownloadDate)
+```
+
+Load the testing data into a data table.
+
+```{r}
+sink()
+
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+TestData <- fread(url)
+
+# record the download date, as mentioned in lectures
+DownloadDate <- date()
+sink("/Users/tsprabhu/github/PML_CourseProject/PML_CourseProject_files/data/download_date_testing.txt")
+cat("Date testing data downloaded: ")
+```
+
+```{r}
+cat(DownloadDate)
+```
+
+
+```{r}
+sink()
+```
+
+Which variables in the test dataset have zero `NA`s?
+Use this tip: [finding columns with all missing values in r](http://stackoverflow.com/a/11330265).
+
+**Identify predictor candidates in the testing dataset**
+We need to identify variables in the test dataset without missing or NA values; these will be suitable predictor candidates.
+```{r}
+isAnyMissing <- sapply(TestData, function (x) any(is.na(x) | x == ""))
+isPredictor <- !isAnyMissing & grepl("belt|[^(fore)]arm|dumbbell|forearm", names(isAnyMissing))
+predCandidates <- names(isAnyMissing)[isPredictor]
+predCandidates
+```
+
+Subset the primary dataset to include only the **predictor candidates** and the outcome variable, `classe`.
+
+```{r}
+varToInclude <- c("classe", predCandidates)
+TrainingData <- TrainingData[, varToInclude, with=FALSE]
+dim(TrainingData)
+```
+
+```{r}
+names(TrainingData)
+```
+
+Make `classe` into a factor.
+
+```{r}
+TrainingData <- TrainingData[, classe := factor(TrainingData[, classe])]
+TrainingData[, .N, classe]
+```
+
+Split the dataset into a 60% training and 40% probing dataset.
+
+```{r}
+library(caret)
+seed <- as.numeric(as.Date("2017-04-03"))
+set.seed(seed)
+inTrain <- createDataPartition(TrainingData$classe, p=0.6)
+DTrain <- TrainingData[inTrain[[1]]]
+DProbe <- TrainingData[-inTrain[[1]]]
+```
+
+Preprocess the prediction variables by centering and scaling.
+
+```{r}
+X <- DTrain[, predCandidates, with=FALSE]
+preProc <- preProcess(X)
+preProc
+```
+
+```{r}
+XCS <- predict(preProc, X)
+DTrainCS <- data.table(data.frame(classe = DTrain[, classe], XCS))
+```
+
+Apply the centering and scaling to the probing dataset.
+
+```{r}
+X <- DProbe[, predCandidates, with=FALSE]
+XCS <- predict(preProc, X)
+DProbeCS <- data.table(data.frame(classe = DProbe[, classe], XCS))
+```
+
+Check for near zero variance.
+
+```{r}
+nzv <- nearZeroVar(DTrainCS, saveMetrics=TRUE)
+if (any(nzv$nzv)) nzv else message("No variables with near zero variance")
+```
+
+Examine groups of prediction variables.
+
+```{r histGroup}
+histGroup <- function (data, regex) {
+  col <- grep(regex, names(data))
+  col <- c(col, which(names(data) == "classe"))
+  library(reshape2)
+  n <- nrow(data)
+  DMelted <- melt(data[, col, with=FALSE][, rownum := seq(1, n)], id.vars=c("rownum", "classe"))
+  library(ggplot2)
+  ggplot(DMelted, aes(x=classe, y=value)) +
+    geom_violin(aes(color=classe, fill=classe), alpha=1/2) +
+#     geom_jitter(aes(color=classe, fill=classe), alpha=1/10) +
+#     geom_smooth(aes(group=1), method="gam", color="black", alpha=1/2, size=2) +
+    facet_wrap(~ variable, scale="free_y") +
+    scale_color_brewer(palette="Spectral") +
+    scale_fill_brewer(palette="Spectral") +
+    labs(x="", y="") +
+    theme(legend.position="none")
+}
+histGroup(DTrainCS, "belt")
+```
+
+```{r}
+histGroup(DTrainCS, "[^(fore)]arm")
+```
+
+```{r}
+histGroup(DTrainCS, "dumbbell")
+```
+
+```{r}
+histGroup(DTrainCS, "forearm")
+```
+
+# Train a prediction model
+
+Using random forest, the out of sample error should be small.
+The error will be estimated using the 40% probing sample.
+I would be quite happy with an error estimate of 3% or less.
+
+Set up the parallel clusters.
+
+```{r}
+library(parallel)
+library(doParallel)
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+```
+
+Set the control parameters.
+
+```{r}
+ctrl <- trainControl(classProbs=TRUE,
+                     savePredictions=TRUE,
+                     allowParallel=TRUE)
+```
+
+Fit out model over the tuning parameters.
+
+```{r}
+method <- "rf"
+system.time(trainingModel <- train(classe ~ ., data=DTrainCS, method=method))
+```
+
+Finally, we terminate the clustering.
+
+```{r}
+stopCluster(cl)
+```
+
+## Evaluate the model on the training dataset
+
+```{r}
+trainingModel
+final_result <- predict(trainingModel, DTrainCS)
+confusionMatrix(final_result, DTrain[, classe])
+```
+
+## Evaluate the model on the probing dataset
+
+```{r}
+final_result <- predict(trainingModel, DProbeCS)
+confusionMatrix(final_result, DProbeCS[, classe])
+```
+
+## Display the final model
+
+```{r finalModel}
+varImp(trainingModel)
+trainingModel$finalModel
+```
+
+**The estimated error rate is less than 1%.**
+
+Save training model object for later.
+
+```{r}
+save(trainingModel, file="trainingModel.RData")
+```
+
+
+# Predict on the test data
+
+Load the training model.
+
+```{r}
+load(file="trainingModel.RData", verbose=TRUE)
+```
+
+Get predictions and evaluate.
+
+```{r}
+TestDataCS <- predict(preProc, TestData[, predCandidates, with=FALSE])
+final_result <- predict(trainingModel, TestDataCS)
+TestData <- cbind(final_result , TestData)
+subset(TestData, select=names(TestData)[grep("belt|[^(fore)]arm|dumbbell|forearm", names(TestData), invert=TRUE)])
+```
+
+## Submission to Coursera
+
+Write submission files to `Prediction Answers`.
+
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  path <- "/Users/tsprabhu/github/PML_CourseProject/PML_CourseProject_files"
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=file.path(path, filename),quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(final_result)
+```
